@@ -1,8 +1,14 @@
 package pool
 
 const (
-	MaxSmallBufferSize  = 1024
-	MaxMediumBufferSize = 32768
+	maxSmallBufferSize  = 1024
+	maxMediumBufferSize = 32768
+)
+
+const (
+	smallSpacing  = 8
+	mediumSpacing = 256
+	largeSpacing  = 4096
 )
 
 type bufferFreeList chan []byte
@@ -26,7 +32,10 @@ func (b *Buffer) Release() {
 	if b == nil || b.pool == nil {
 		return
 	}
+
 	b.pool.Put(b)
+	b.pool = nil
+	b.data = nil
 }
 
 // BufferPool is a buffer pool.
@@ -65,10 +74,10 @@ func (p *BufferPool) Get(size int) *Buffer {
 	if size <= 0 {
 		return nil
 	}
-	if size <= MaxSmallBufferSize {
+	if size <= maxSmallBufferSize {
 		return p.getSmallBuffer(size)
 	}
-	if size <= MaxMediumBufferSize {
+	if size <= maxMediumBufferSize {
 		return p.getMediumBuffer(size)
 	}
 	return p.getLargeBuffer(size)
@@ -81,28 +90,28 @@ func (p *BufferPool) Put(b *Buffer) {
 	}
 
 	size := cap(b.data)
-	if size <= MaxSmallBufferSize {
+	if size <= maxSmallBufferSize {
 		select {
-		case p.smallBuffers[size/8-1] <- b.data:
+		case p.smallBuffers[size/smallSpacing-1] <- b.data:
 		default:
 		}
 		return
 	}
-	if size <= MaxMediumBufferSize {
+	if size <= maxMediumBufferSize {
 		select {
-		case p.mediumBuffers[(size-MaxSmallBufferSize)/256-1] <- b.data:
+		case p.mediumBuffers[(size-maxSmallBufferSize)/mediumSpacing-1] <- b.data:
 		default:
 		}
 		return
 	}
 	select {
-	case p.largeBuffers[(size-MaxMediumBufferSize)/4096-1] <- b.data:
+	case p.largeBuffers[(size-maxMediumBufferSize)/largeSpacing-1] <- b.data:
 	default:
 	}
 }
 
 func (p *BufferPool) getSmallBuffer(size int) *Buffer {
-	n, r := size/8, size%8
+	n, r := size/smallSpacing, size%smallSpacing
 	if r == 0 {
 		n--
 	}
@@ -111,7 +120,7 @@ func (p *BufferPool) getSmallBuffer(size int) *Buffer {
 	select {
 	case buf = <-p.smallBuffers[n]:
 	default:
-		buf = make([]byte, (n+1)*8)
+		buf = make([]byte, (n+1)*smallSpacing)
 	}
 	return &Buffer{
 		data: buf[:size],
@@ -120,7 +129,7 @@ func (p *BufferPool) getSmallBuffer(size int) *Buffer {
 }
 
 func (p *BufferPool) getMediumBuffer(size int) *Buffer {
-	n, r := (size-MaxSmallBufferSize)/256, (size-MaxSmallBufferSize)%256
+	n, r := (size-maxSmallBufferSize)/mediumSpacing, (size-maxSmallBufferSize)%mediumSpacing
 	if r == 0 {
 		n--
 	}
@@ -129,7 +138,7 @@ func (p *BufferPool) getMediumBuffer(size int) *Buffer {
 	select {
 	case buf = <-p.mediumBuffers[n]:
 	default:
-		buf = make([]byte, MaxSmallBufferSize+(n+1)*256)
+		buf = make([]byte, maxSmallBufferSize+(n+1)*mediumSpacing)
 	}
 	return &Buffer{
 		data: buf[:size],
@@ -138,16 +147,21 @@ func (p *BufferPool) getMediumBuffer(size int) *Buffer {
 }
 
 func (p *BufferPool) getLargeBuffer(size int) *Buffer {
-	n, r := (size-MaxMediumBufferSize)/4096, (size-MaxMediumBufferSize)%4096
+	n, r := (size-maxMediumBufferSize)/largeSpacing, (size-maxMediumBufferSize)%largeSpacing
 	if r == 0 {
 		n--
+	}
+	if n > 255 {
+		return &Buffer{
+			data: make([]byte, size),
+		}
 	}
 
 	var buf []byte
 	select {
 	case buf = <-p.largeBuffers[n]:
 	default:
-		buf = make([]byte, MaxMediumBufferSize+(n+1)*4096)
+		buf = make([]byte, maxMediumBufferSize+(n+1)*largeSpacing)
 	}
 	return &Buffer{
 		data: buf[:size],
